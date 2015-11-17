@@ -107,6 +107,7 @@ If you do not know your keychain password, enter your new password in the New an
     property passwordCheckPassed :      false
     
 --- Other Properties
+
     property warningDays :              14
     property menu_title :               "[ ? ]"
     property accTest :                  1
@@ -157,7 +158,7 @@ If you do not know your keychain password, enter your new password in the New an
     -- Check if running in a local account
     on localAccountCheck_(sender)
         set accountLoc to (do shell script "dscl localhost read /Search/Users/$USER AuthenticationAuthority") as string
-        if "Active Directory" is in accountLoc
+        if "VAS" is in accountLoc
             set my isLocalAccount to false
             log "Running under a network account."
         else
@@ -432,7 +433,9 @@ Enable it now?" with icon 2 buttons {"No","Yes"} default button 2)
     
     -- Test to see if we're on the domain
     on domainTest_(sender)
-        set domain to (do shell script "/usr/sbin/dsconfigad -show | /usr/bin/awk '/Active Directory Domain/{print $NF}'") as text
+        log "Running domain test."
+        set domain to (do shell script "/usr/bin/vastool info domain") as text
+        log "Domain: " & domain
         try
             set digResult to (do shell script "/usr/bin/dig +time=2 +tries=1 -t srv _ldap._tcp." & domain) as text
         on error theError
@@ -444,6 +447,7 @@ Enable it now?" with icon 2 buttons {"No","Yes"} default button 2)
         end try
         if "ANSWER SECTION" is in digResult
             set my onDomain to true
+            log "onDomain variable: " & onDomain
             my statusMenu's itemWithTitle_("Refresh Kerberos Ticket")'s setEnabled_(1)
             -- Set variable to boolean
             set allowPasswordChange to allowPasswordChange as boolean
@@ -469,7 +473,8 @@ Enable it now?" with icon 2 buttons {"No","Yes"} default button 2)
     -- Check if password is set to never expire
     on canPassExpire_(sender)
         log "Testing if password can expire…"
-        set my uAC to (do shell script "/usr/bin/dscl localhost read /Search/Users/$USER userAccountControl | /usr/bin/awk '/:userAccountControl:/{print $2}'")
+        set userName to short user name of (system info)
+        set my uAC to (do shell script "/opt/quest/bin/vastool search '(sAMAccountName=" & userName & ")' | grep userAccountControl | /usr/bin/awk '{print $2}'")
         if (count words of uAC) is greater than 1
             set my uAC to last word of uAC
         end if
@@ -482,7 +487,7 @@ Enable it now?" with icon 2 buttons {"No","Yes"} default button 2)
                 updateMenuTitle_("[--]", "Your password does not expire.")
                 set my theMessage to "Your password does not expire."
             else
-                log "  Password does expire."
+                log "Password does expire."
             end if
         on error
             log "  Could not determine if password expires."
@@ -493,12 +498,15 @@ Enable it now?" with icon 2 buttons {"No","Yes"} default button 2)
     on doKerbCheck_(sender)
         if my onDomain is true and my passExpires is true and my skipKerb is false
             if selectedMethod = 0
+                log "Selected Method is 0"
                 doLionKerb_(me)
             else -- if selectedMethod = 1
+                log "Selected Method is 1"
                 doProcess_(me)
             end if
         else -- if skipKerb is true
             doProcess_(me)
+            log "Skip Kerb"
         end if
     end doKerbCheck_
 
@@ -553,11 +561,13 @@ Enable it now?" with icon 2 buttons {"No","Yes"} default button 2)
             -- find source of user node
             set originalNodeName to (do shell script "/usr/bin/dscl localhost read /Search/Users/$USER OriginalNodeName | grep -o -e '/.*'") as text
             if (count words of originalNodeName) > 0
+                log "originalNodeName > 0"
                 set my myLDAP to (do shell script "/usr/bin/dscl localhost read '" & originalNodeName & "' ServerConnection | /usr/bin/awk '/ServerConnection/{print $2}'") as text
                 set my mySearchBase to (do shell script "/usr/bin/dscl localhost read '" & originalNodeName & "' LDAPSearchBaseSuffix | /usr/bin/awk '/LDAPSearchBaseSuffix/{print $2}'") as text
             end if
             if (count words of myLDAP) = 0
                 -- "first word of" added for 10.7 compatibility, which may return more than one item
+                log "count words = 0"
                 set my myLDAP to first word of (do shell script "/usr/sbin/scutil --dns | /usr/bin/awk '/nameserver\\[0\\]/{print $3}'") as text
             end if
         on error theError
@@ -570,7 +580,9 @@ Enable it now?" with icon 2 buttons {"No","Yes"} default button 2)
     -- Use dig to get AD LDAP server from domain name
     on getADLDAP_(sender)
         try
-            set myDomain to (do shell script "/usr/sbin/dsconfigad -show | /usr/bin/awk '/Active Directory Domain/{print $NF}'") as text
+            log "Getting domain info...again"
+            set myDomain to (do shell script "/usr/bin/vastool info domain") as text
+            log myDomain
             try
                 set myLDAPresult to (do shell script "/usr/bin/dig +time=2 +tries=1 -t srv _ldap._tcp." & myDomain) as text
             on error theError
@@ -632,6 +644,7 @@ Enable it now?" with icon 2 buttons {"No","Yes"} default button 2)
         fmt's setDecimalSeparator_(".")
         
         set my pwdSetDateUnix to (do shell script "/usr/bin/dscl localhost read /Search/Users/\"$USER\" SMBPasswordLastSet | /usr/bin/awk '/LastSet:/{print $2}'")
+        log "pwdSetDateUnix: " + pwdSetDateUnix
         if (count words of pwdSetDateUnix) is greater than 0
             set my pwdSetDateUnix to last word of pwdSetDateUnix
             set my pwdSetDateUnix to ((pwdSetDateUnix as integer) / 10000000 - 11644473600)
@@ -671,7 +684,8 @@ Enable it now?" with icon 2 buttons {"No","Yes"} default button 2)
     on easyMethod_(sender)
         try
             set userName to short user name of (system info)
-            set expireDateResult to  (do shell script "/usr/bin/dscl localhost read /Search/Users/" & userName & " msDS-UserPasswordExpiryTimeComputed")
+            log userName
+            set expireDateResult to  (do shell script "vastool attrs " & userName & " msDS-UserPasswordExpiryTimeComputed")
             if "msDS-UserPasswordExpiryTimeComputed" is in expireDateResult
                 set my goEasy to true
                 set my expireDate to last word of expireDateResult
@@ -1518,7 +1532,7 @@ Please choose your configuration options."
                 -- Set a timer to trigger doProcess handler on an interval and spawn notifications (if enabled).
                 set my processTimer to NSTimer's scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_((my passwordCheckInterval * 3600), me, "intervalDoProcess:", missing value, true)
                 else
-                log "Stopping."
+                log "Stopping. #2"
             end if
         else
             --offlineUpdate_(me)
@@ -1538,7 +1552,7 @@ Please choose your configuration options."
             startMeUp_(me)
             log "  Proceeding due to manual override."
         else
-            log "  Stopping."
+            log "  Stopping. #3"
         end if
     end applicationWillFinishLaunching_
     
